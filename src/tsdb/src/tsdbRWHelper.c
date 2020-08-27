@@ -449,6 +449,36 @@ int tsdbLoadCompIdx(SRWHelper *pHelper, void *target) {
   int fd = pFile->fd;
 
   if (!helperHasState(pHelper, TSDB_HELPER_IDX_LOAD)) {
+    // Load file info
+#ifndef TSDB_NO_CHECK_FILE
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+      tsdbError("vgId:%d failed to lseek file %s to 0 since %s", REPO_ID(pHelper->pRepo), pFile->fname,
+                strerror(errno));
+      terrno = TAOS_SYSTEM_ERROR(errno);
+      return -1;
+    }
+
+    // TODO: remove duplicate codes here
+    char          buf[TSDB_FILE_HEAD_SIZE] = "\0";
+    STsdbFileInfo info = {0};
+    uint32_t      version = 0;
+
+    if (taosTRead(fd, buf, TSDB_FILE_HEAD_SIZE) < TSDB_FILE_HEAD_SIZE) {
+      tsdbError("vgId:%d failed to read header part %d bytes from file %s since %s", REPO_ID(pHelper->pRepo),
+                TSDB_FILE_HEAD_SIZE, pFile->fname, strerror(errno));
+      terrno = TAOS_SYSTEM_ERROR(errno);
+      return -1;
+    }
+
+    void *pBuf = (void *)buf;
+    pBuf = taosDecodeFixedU32(pBuf, &version);
+    pBuf = tsdbDecodeSFileInfo(pBuf, &info);
+
+    ASSERT(info.magic == pFile->info.magic);
+    ASSERT(info.len == pFile->info.len);
+    ASSERT(info.offset == pFile->info.offset);
+#endif
+
     // If not load from file, just load it in object
     if (pFile->info.len > 0) {
       if ((pHelper->pBuffer = taosTRealloc(pHelper->pBuffer, pFile->info.len)) == NULL) {
@@ -470,8 +500,8 @@ int tsdbLoadCompIdx(SRWHelper *pHelper, void *target) {
       }
 
       if (!taosCheckChecksumWhole((uint8_t *)(pHelper->pBuffer), pFile->info.len)) {
-        tsdbError("vgId:%d file %s SCompIdx part is corrupted. len %u", REPO_ID(pHelper->pRepo), pFile->fname,
-                  pFile->info.len);
+        tsdbError("vgId:%d file %s SCompIdx part is corrupted with bad checksum. len %u offset %u",
+                  REPO_ID(pHelper->pRepo), pFile->fname, pFile->info.len, pFile->info.offset);
         terrno = TSDB_CODE_TDB_FILE_CORRUPTED;
         return -1;
       }
@@ -493,8 +523,8 @@ int tsdbLoadCompIdx(SRWHelper *pHelper, void *target) {
 
         ptr = tsdbDecodeSCompIdx(ptr, &(pHelper->idxH.pIdxArray[pHelper->idxH.numOfIdx - 1]));
         if (ptr == NULL) {
-          tsdbError("vgId:%d file %s SCompIdx part is corrupted. len %u", REPO_ID(pHelper->pRepo), pFile->fname,
-                    pFile->info.len);
+          tsdbError("vgId:%d file %s SCompIdx part is corrupted with bad decode. len %u offset %u",
+                    REPO_ID(pHelper->pRepo), pFile->fname, pFile->info.len, pFile->info.offset);
           terrno = TSDB_CODE_TDB_FILE_CORRUPTED;
           return -1;
         }
